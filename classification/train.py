@@ -519,8 +519,10 @@ def main(args):
     #         download=args.dataset_download,
     #         batch_size=args.batch_size)
 
-    train_dataset, val_dataset = utils.get_dataset(args.datalist_dir, args.datalist_name, fold_num= args.fold_num, transform = utils.transform)
-    # setup learning rate schedule and starting epoch
+
+    train_dataset = utils.CustomDataset(os.path.join(args.datalist_dir,f'Train_list_{args.fold_num}_{args.datalist_name}'), utils.transform['train'])
+    val_dataset = utils.CustomDataset(os.path.join(args.datalist_dir,f'Val_list_{args.fold_num}_{args.datalist_name}'), utils.transform['val'])
+    # setup learning rate schedule and starting epoch   # setup learning rate schedule and starting epoch
     lr_scheduler, num_epochs = create_scheduler(args, optimizer, len(train_dataset))
     start_epoch = 0
     if args.start_epoch is not None:

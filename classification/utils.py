@@ -27,11 +27,3 @@ class CustomDataset(Dataset):
         return img
     def __getitem__(self, index):
         return self.open_image(self.data.loc[index]['Path']), np.expand_dims(self.data.loc[index]['Y'], -1).astype('float32')
-
-def get_dataset(listdir,name, fold_num= 0, transform = transform):
-    train_dataset = CustomDataset(os.path.join(listdir,f'Train_list_{fold_num}_{name}'), transform)
-    val_dataset = CustomDataset(os.path.join(listdir,f'Val_list_{fold_num}_{name}'), transform)
-    return train_dataset, val_dataset
-
-
-
