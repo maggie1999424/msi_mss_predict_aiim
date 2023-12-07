@@ -19,7 +19,7 @@ class CustomDataset(Dataset):
         self.transform = transform
     def __len__(self):
         return len(self.data)
-        # return 300
+        # return 1200
     def open_image(self,path):
         img = Image.open(path)
         img = img.convert('RGB')

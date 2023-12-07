@@ -89,6 +89,8 @@ def get_args_parser(parents=[], read_config=False):
                         help='path to dataset ListDir')
     parser.add_argument('--datalist_name',  metavar='Name', default='Raw',
                         help='datalist name')
+    parser.add_argument('--fold_num',  metavar='INT', default=0,
+                        help='which fold number to use, int')
     # parser.add_argument('--dataset', '-d', metavar='NAME', default='',
     #                     help='dataset type (default: ImageFolder/ImageTar if empty)')
     # parser.add_argument('--train-split', metavar='NAME', default='train',
@@ -517,7 +519,7 @@ def main(args):
     #         download=args.dataset_download,
     #         batch_size=args.batch_size)
 
-    train_dataset, val_dataset = utils.get_dataset(args.datalist_dir, args.datalist_name, fold_num= 0, transform = utils.transform)
+    train_dataset, val_dataset = utils.get_dataset(args.datalist_dir, args.datalist_name, fold_num= args.fold_num, transform = utils.transform)
     # setup learning rate schedule and starting epoch
     lr_scheduler, num_epochs = create_scheduler(args, optimizer, len(train_dataset))
     start_epoch = 0
@@ -586,7 +588,8 @@ def main(args):
     # )
     loader_train = DataLoader(dataset=train_dataset, 
                             batch_size=args.batch_size,
-                              shuffle=True)
+                            
+                            shuffle=True)
 
     loader_eval = None
     loader_eval = DataLoader(dataset=val_dataset, 
@@ -845,7 +848,7 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
     with torch.no_grad():
         for batch_idx, (input, target) in enumerate(loader):
             last_batch = batch_idx == last_idx
-            input, target = input.cuda(), target.cuda()
+            input = input.cuda()
             # if not args.prefetcher:
             #     input = input.cuda()
             #     target = target.cuda()
@@ -863,7 +866,8 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
                 output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
                 target = target[0:target.size(0):reduce_factor]
 
-            loss = loss_fn(output, target)
+            output =  output.to('cpu')
+            loss = loss_fn( target,output)
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
             if args.distributed:
