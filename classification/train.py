@@ -1,7 +1,7 @@
 #!python3
 '''
 This script is modified from
-https://github.com/SHI-Labs/Neighborhood-Attention-Transformer
+https://github.com/SHI-Labs/Neighborhood-Attention-data_transformser
 '''
 
 import argparse
@@ -11,12 +11,15 @@ import logging
 from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
+import numpy as np
 
 import torch
 import torch.nn as nn
 import torchvision.utils
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
 from torch.utils.data import DataLoader
+from sklearn.metrics import precision_recall_curve, average_precision_score, auc,  PrecisionRecallDisplay, RocCurveDisplay
+from sklearn.metrics import roc_auc_score, roc_curve, f1_score, accuracy_score
 
 # from timm.data import create_dataset, create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
 from timm.data import create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
@@ -90,7 +93,7 @@ def get_args_parser(parents=[], read_config=False):
     parser.add_argument('--datalist_name',  metavar='Name', default='Raw',
                         help='datalist name')
     parser.add_argument('--fold_num',  metavar='INT', default=0,
-                        help='which fold number to use, int')
+                        help='fold count')
     # parser.add_argument('--dataset', '-d', metavar='NAME', default='',
     #                     help='dataset type (default: ImageFolder/ImageTar if empty)')
     # parser.add_argument('--train-split', metavar='NAME', default='train',
@@ -309,8 +312,8 @@ def get_args_parser(parents=[], read_config=False):
                         help='name of train experiment, name of sub-folder for output')
     parser.add_argument('--project', default='', type=str, metavar='NAME',
                         help='project name')
-    parser.add_argument('--eval-metric', default='top1', type=str, metavar='EVAL_METRIC',
-                        help='Best metric (default: "top1"')
+    parser.add_argument('--eval-metric', default='acc', type=str, metavar='EVAL_METRIC',
+                        help='Best metric (default: "acc"')
     parser.add_argument('--tta', type=int, default=0, metavar='N',
                         help='Test/inference time augmentation (oversampling) factor. 0=None (default: 0)')
     parser.add_argument("--local_rank", default=0, type=int)
@@ -390,24 +393,31 @@ def main(args):
                         "Install NVIDA apex or upgrade to PyTorch 1.6")
 
     random_seed(args.seed, args.rank)
-    model = create_model(
-        args.model,
-        pretrained=args.pretrained,
-        num_classes=args.num_classes,
-        # drop_rate=args.drop,
-        # drop_connect_rate=args.drop_connect,  # DEPRECATED, use drop_path
-        # drop_path_rate=args.drop_path,
-        # drop_block_rate=args.drop_block,
-        global_pool=args.gp,
-        bn_tf=args.bn_tf,
-        bn_momentum=args.bn_momentum,
-        bn_eps=args.bn_eps,
-        scriptable=args.torchscript,
-        checkpoint_path=args.initial_checkpoint)
-    if args.num_classes is None:
-        assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
-        args.num_classes = model.num_classes  # FIXME handle model default vs config num_classes more elegantly
+    # model = create_model(
+    #     args.model,
+    #     pretrained=args.pretrained,
+    #     num_classes=args.num_classes,
+    #     # drop_rate=args.drop,
+    #     # drop_connect_rate=args.drop_connect,  # DEPRECATED, use drop_path
+    #     # drop_path_rate=args.drop_path,
+    #     # drop_block_rate=args.drop_block,
+    #     global_pool=args.gp,
+    #     bn_tf=args.bn_tf,
+    #     bn_momentum=args.bn_momentum,
+    #     bn_eps=args.bn_eps,
+    #     scriptable=args.torchscript,
+    #     checkpoint_path=args.initial_checkpoint)
+    # if args.num_classes is None:
+    #     assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
+    #     args.num_classes = model.num_classes  # FIXME handle model default vs config num_classes more elegantly
+    # model = torchvision.models.resnet18(weights='IMAGENET1K_V1')
+    # # for param in model.parameters():
+    # #     param.requires_grad = False
 
+    # # Parameters of newly constructed modules have requires_grad=True by default
+    # num_ftrs = model.fc.in_features
+    # model.fc = nn.Linear(num_ftrs, 2)
+    model = utils.pretrained_model(args.model,num_classes=args.num_classes,freeze=True)
     model.cuda()
 
     if args.local_rank == 0 and not args.torchscript:
@@ -431,7 +441,6 @@ def main(args):
         assert num_aug_splits > 1 or args.resplit
         model = convert_splitbn_model(model, max(num_aug_splits, 2))
 
-    # move model to GPU, enable channels last layout if set
     model.cuda()
     if args.channels_last:
         model = model.to(memory_format=torch.channels_last)
@@ -455,7 +464,7 @@ def main(args):
         model = torch.jit.script(model)
 
     optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
-
+    # optimizer_conv = torch.nn.optim.AdamW(model.head.parameters(), lr=0.0001)
     # setup automatic mixed-precision (AMP) loss scaling and op casting
     amp_autocast = suppress  # do nothing
     loss_scaler = None
@@ -519,10 +528,9 @@ def main(args):
     #         download=args.dataset_download,
     #         batch_size=args.batch_size)
 
-
-    train_dataset = utils.CustomDataset(os.path.join(args.datalist_dir,f'Train_list_{args.fold_num}_{args.datalist_name}'), utils.transform['train'])
-    val_dataset = utils.CustomDataset(os.path.join(args.datalist_dir,f'Val_list_{args.fold_num}_{args.datalist_name}'), utils.transform['val'])
-    # setup learning rate schedule and starting epoch   # setup learning rate schedule and starting epoch
+    train_dataset = utils.CustomDataset(os.path.join(args.datalist_dir,f'Train_list_{args.fold_num}_{args.datalist_name}'), utils.data_transforms['train'])
+    val_dataset = utils.CustomDataset(os.path.join(args.datalist_dir,f'Val_list_{args.fold_num}_{args.datalist_name}'), utils.data_transforms['val'])
+    # setup learning rate schedule and starting epoch
     lr_scheduler, num_epochs = create_scheduler(args, optimizer, len(train_dataset))
     start_epoch = 0
     if args.start_epoch is not None:
@@ -551,86 +559,22 @@ def main(args):
         else:
             mixup_fn = Mixup(**mixup_args)
 
-    # # wrap dataset in AugMix helper
-    # if num_aug_splits > 1:
-    #     dataset_train = AugMixDataset(dataset_train, num_splits=num_aug_splits)
-
     # create data loaders w/ augmentation pipeiine
     train_interpolation = args.train_interpolation
     if args.no_aug or not train_interpolation:
         train_interpolation = data_config['interpolation']
-    # loader_train = create_loader(
-    #     custom_dataset,
-    #     input_size=data_config['input_size'],
-    #     batch_size=args.batch_size,
-    #     is_training=True,
-    #     use_prefetcher=args.prefetcher,
-    #     no_aug=args.no_aug,
-    #     re_prob=args.reprob,
-    #     re_mode=args.remode,
-    #     re_count=args.recount,
-    #     re_split=args.resplit,
-    #     scale=args.scale,
-    #     ratio=args.ratio,
-    #     hflip=args.hflip,
-    #     vflip=args.vflip,
-    #     color_jitter=args.color_jitter,
-    #     auto_augment=args.aa,
-    #     num_aug_repeats=args.aug_repeats,
-    #     num_aug_splits=num_aug_splits,
-    #     interpolation=train_interpolation,
-    #     mean=data_config['mean'],
-    #     std=data_config['std'],
-    #     num_workers=args.workers,
-    #     distributed=args.distributed,
-    #     collate_fn=collate_fn,
-    #     pin_memory=args.pin_mem,
-    #     use_multi_epochs_loader=args.use_multi_epochs_loader,
-    #     worker_seeding=args.worker_seeding,
-    # )
+
     loader_train = DataLoader(dataset=train_dataset, 
                             batch_size=args.batch_size,
-                            
-                            shuffle=True)
+                              shuffle=True)
 
     loader_eval = None
     loader_eval = DataLoader(dataset=val_dataset, 
                         batch_size=args.batch_size,
-                            shuffle=True)
+                            shuffle=False)
 
-    # if dataset_eval is not None:
-    #     loader_eval = create_loader(
-    #         dataset_eval,
-    #         input_size=data_config['input_size'],
-    #         batch_size=args.validation_batch_size or args.batch_size,
-    #         is_training=False,
-    #         use_prefetcher=args.prefetcher,
-    #         interpolation=data_config['interpolation'],
-    #         mean=data_config['mean'],
-    #         std=data_config['std'],
-    #         num_workers=args.workers,
-    #         distributed=args.distributed,
-    #         crop_pct=data_config['crop_pct'],
-    #         pin_memory=args.pin_mem,
-    #     )
+ 
 
-    # setup loss function
-    if args.jsd_loss:
-        assert num_aug_splits > 1  # JSD only valid with aug splits set
-        train_loss_fn = JsdCrossEntropy(num_splits=num_aug_splits, smoothing=args.smoothing)
-    elif mixup_active:
-        # smoothing is handled with mixup target transform which outputs sparse, soft targets
-        if args.bce_loss:
-            train_loss_fn = BinaryCrossEntropy(target_threshold=args.bce_target_thresh)
-        else:
-            train_loss_fn = SoftTargetCrossEntropy()
-    elif args.smoothing:
-        if args.bce_loss:
-            train_loss_fn = BinaryCrossEntropy(smoothing=args.smoothing, target_threshold=args.bce_target_thresh)
-        else:
-            train_loss_fn = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
-    else:
-        train_loss_fn = nn.CrossEntropyLoss()
     train_loss_fn = BinaryCrossEntropy(args.bce_target_thresh)
     # train_loss_fn = train_loss_fn.cuda()
     # validate_loss_fn = nn.CrossEntropyLoss()
@@ -659,19 +603,6 @@ def main(args):
             checkpoint_dir=output_dir, recovery_dir=output_dir, decreasing=decreasing, max_history=args.checkpoint_hist)
         # with open(os.path.join(output_dir, 'args.yaml'), 'w') as f:
         #     f.write(args_text)
-
-        if args.log_wandb:
-            if has_wandb:
-                wandb.init(
-                    id=args.experiment,
-                    project=args.project,
-                    name=args.model,
-                    config=args,
-                    resume=bool(args.resume)
-                )
-            else:
-                builtin_print("You've requested to log metrics to wandb but package not found. "
-                                "Metrics not being logged to wandb, try `pip install wandb`")
 
     try:
         for epoch in range(start_epoch, num_epochs):
@@ -755,12 +686,10 @@ def train_one_epoch(
 
         # with amp_autocast():
         output = model(input)
-        output = output.to('cpu')
-        target = target.to('cpu')
-
+        # output = output.to('cpu')
+        # target = target.to('cpu')
         # loss = loss_fn(output, target)
-        loss = loss_fn(target, output)
-
+        loss = loss_fn(output, target,)
         if not args.distributed:
             losses_m.update(loss.item(), input.size(0))
 
@@ -840,8 +769,9 @@ def train_one_epoch(
 def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix=''):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
-    top1_m = AverageMeter()
-    top5_m = AverageMeter()
+    acc_m = AverageMeter()
+    targets = []
+    pred_scores = []
 
     model.eval()
 
@@ -850,7 +780,7 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
     with torch.no_grad():
         for batch_idx, (input, target) in enumerate(loader):
             last_batch = batch_idx == last_idx
-            input = input.cuda()
+            input, target = input.cuda(), target.cuda()
             # if not args.prefetcher:
             #     input = input.cuda()
             #     target = target.cuda()
@@ -868,22 +798,23 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
                 output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
                 target = target[0:target.size(0):reduce_factor]
 
-            output =  output.to('cpu')
-            loss = loss_fn( target,output)
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            loss = loss_fn(output,target)
+
+            target, output = target.to('cpu'), output.to('cpu')
+            pred = output > 0.5
+            acc = accuracy_score(target, pred)
+            # pred_scores = np.concatenate([pred_scores,output])
 
             if args.distributed:
                 reduced_loss = reduce_tensor(loss.data, args.world_size)
-                acc1 = reduce_tensor(acc1, args.world_size)
-                acc5 = reduce_tensor(acc5, args.world_size)
+                # acc1 = reduce_tensor(acc1, args.world_size)
             else:
                 reduced_loss = loss.data
 
             torch.cuda.synchronize()
 
-            losses_m.update(reduced_loss.item(), input.size(0))
-            top1_m.update(acc1.item(), output.size(0))
-            top5_m.update(acc5.item(), output.size(0))
+            losses_m.update(reduced_loss.item())
+            acc_m.update(acc)
 
             batch_time_m.update(time.time() - end)
             end = time.time()
@@ -893,12 +824,13 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
                     '{0}: [{1:>4d}/{2}]  '
                     'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
                     'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
-                    'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
-                    'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})'.format(
+                    'Acc: {acc.val:>7.4f} ({acc.avg:>7.4f}) '.format(
                         log_name, batch_idx, last_idx, batch_time=batch_time_m,
-                        loss=losses_m, top1=top1_m, top5=top5_m))
-
-    metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])
+                        loss=losses_m, acc=acc_m,  ))
+    # auroc = roc_auc_score(np.squeeze(targets),np.squeeze(pred_scores),)
+    # auprc = average_precision_score(np.squeeze(targets),np.squeeze(pred_scores),)
+    # metrics = OrderedDict([('loss', losses_m.avg), ('acc', acc_m.avg), ('auroc', auroc), ('auprc',auprc) ])
+    metrics = OrderedDict([('loss', losses_m.avg), ('acc', acc_m.avg),])
     return metrics
 
 

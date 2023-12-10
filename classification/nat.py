@@ -278,7 +278,7 @@ class NAT(nn.Module):
             if num_classes > 0
             else nn.Identity()
         )
-        self.sigmoid = nn.Sigmoid()
+
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -309,7 +309,6 @@ class NAT(nn.Module):
     def forward(self, x):
         x = self.forward_features(x)
         x = self.head(x)
-        x = self.sigmoid(x)
         return x
 
 
