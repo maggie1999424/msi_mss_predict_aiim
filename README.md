@@ -42,6 +42,8 @@ pip3 install natten -f https://shi-labs.com/natten/wheels/cu118/torch2.0.0/index
 
 ### Train/Val/Test Split
 
+但是我弄丟了
+
 ```
 List/
 ├── Test_list_Raw
@@ -59,8 +61,4 @@ List/
 
 ### Run Training
 
-see huggingface.ipynb
-
-### Save Path
-
-The best weight `.pth` and the epoch summary will be automatically saved in [output](output)
+see  [huggingface-with-pretrain.ipynb](huggingface-with-pretrain.ipynb) 
